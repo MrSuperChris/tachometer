@@ -1,0 +1,14 @@
+{
+  "name": "Tachometer — Interoception Trainer",
+  "short_name": "Tachometer",
+  "description": "Train your mind to read your body: heartbeat detection tasks with real camera pulse measurement, plus a 14-day body scan program.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
