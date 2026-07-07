@@ -54,7 +54,7 @@ export class PPGEngine extends EventTarget {
     this.dispatchEvent(new CustomEvent('sample', { detail: { t, v, d } }));
 
     if (!fingerOk) {
-      this._setQuality(0, meta.blown ? 'too bright — ease off' : 'no finger');
+      this._setQuality(0, meta.state || 'no finger');
       return;
     }
 
@@ -190,9 +190,16 @@ export class CameraSource {
     } else if (caps.focusMode?.includes('fixed')) {
       tries.push({ focusMode: 'fixed' });
     }
+    // Lock exposure low so a dark, covered lens doesn't get gain-cranked into
+    // noisy gray (which reads like an empty room). Manual mode where available,
+    // else pin exposure compensation to minimum.
+    if (caps.exposureMode?.includes('manual')) tries.push({ exposureMode: 'manual' });
+    if (caps.exposureTime) tries.push({ exposureTime: caps.exposureTime.min });
+    if (caps.iso) tries.push({ iso: caps.iso.min });
     if (caps.exposureCompensation) {
       tries.push({ exposureCompensation: caps.exposureCompensation.min });
     }
+    if (caps.whiteBalanceMode?.includes('manual')) tries.push({ whiteBalanceMode: 'manual' });
     for (const c of tries) {
       try { await track.applyConstraints({ advanced: [c] }); } catch (_) {}
     }
@@ -204,30 +211,55 @@ export class CameraSource {
     await this.video.play();
 
     this.useGreen = false;
+    this._fingerHold = 0;
     this.timer = setInterval(() => {
       const { ctx, canvas, video } = this;
       if (video.readyState < 2) return;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let r = 0, g = 0, b = 0;
+      let sr = 0, sg = 0, sb = 0, sL = 0, sL2 = 0;
       const n = px.length / 4;
-      for (let i = 0; i < px.length; i += 4) { r += px[i]; g += px[i + 1]; b += px[i + 2]; }
-      r /= n; g /= n; b /= n;
+      for (let i = 0; i < px.length; i += 4) {
+        const R = px[i], G = px[i + 1], B = px[i + 2];
+        sr += R; sg += G; sb += B;
+        const L = (R + G + B) / 3;
+        sL += L; sL2 += L * L;
+      }
+      const r = sr / n, g = sg / n, b = sb / n;
+      const meanL = sL / n;
+      const sd = Math.sqrt(Math.max(sL2 / n - meanL * meanL, 0));
+      const cov = sd / (meanL + 1); // spatial coefficient of variation across the frame
 
       // Torch usually clips the red channel at 255, flattening the pulse wave.
       // Green rarely clips and carries a cleaner PPG signal — switch with hysteresis.
       if (r >= 245) this.useGreen = true;
       else if (r <= 235) this.useGreen = false;
-      const blown = r >= 245 && g >= 230; // even green is clipped — too much light
+      const blown = r >= 250 && g >= 235;
       const v = this.useGreen ? g : r;
 
-      // finger over lens: red-dominant image (works dim or bright), or red fully
-      // saturated with usable green underneath
-      const fingerOk = !blown &&
-        ((r > 35 && r > 1.35 * g && r > 1.35 * b) || (r >= 245 && g > 8));
+      // Finger detection by spatial UNIFORMITY, not just redness: a covered lens
+      // shows one flat colour (low cov) whether it's bright-red-lit or dark; a room
+      // is full of edges (high cov). This catches the dark-finger case that pure
+      // red-dominance misses (finger down, flash not reaching it → gain-cranked gray).
+      const uniform = cov < 0.22;
+      const redDom = r > g * 1.10 && r >= b;
+      const dark = meanL < 55;
+      const rawFinger = !blown && uniform && (redDom || dark);
+      // debounce: hold detection ~500ms so brief valid moments don't flicker away
+      if (rawFinger) this._fingerHold = performance.now();
+      const fingerOk = performance.now() - this._fingerHold < 500;
+
+      // actionable state for the readout — "too dark" and "not on lens" are
+      // different problems (flash placement vs. finger placement)
+      let state;
+      if (blown) state = 'too bright';
+      else if (!uniform) state = 'not on lens';
+      else if (dark && !redDom) state = 'too dark — flash not on finger';
+      else state = 'good';
+
       onSample(performance.now(), v, fingerOk, {
         blown, r: Math.round(r), g: Math.round(g), b: Math.round(b),
-        channel: this.useGreen ? 'green' : 'red',
+        channel: this.useGreen ? 'green' : 'red', cov: +cov.toFixed(2), state,
       });
     }, 33);
   }

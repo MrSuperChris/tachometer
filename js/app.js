@@ -60,16 +60,15 @@ engine.addEventListener('sample', (e) => {
 // live diagnostic readout — turns "am I doing it wrong?" into something visible
 function updateReadout() {
   const m = engine.lastMeta || {};
-  const finger = $('#ro-finger'), bright = $('#ro-bright'), channel = $('#ro-channel');
-  const ok = engine.lastFingerOk;
-  finger.textContent = ok ? 'detected' : (m.blown ? 'too bright' : 'not on lens');
-  finger.className = ok ? 'ok' : 'bad';
-  // brightness of the channel we're reading, 0–255
-  const level = m.channel === 'green' ? m.g : m.r;
-  const state = level == null ? '—'
-    : m.blown ? 'saturated' : level < 30 ? 'too dark' : level > 240 ? 'very bright' : 'good';
-  bright.textContent = level == null ? '—' : `${level} (${state})`;
-  bright.className = (state === 'good') ? 'ok' : (state === '—' ? '' : 'bad');
+  const finger = $('#ro-finger'), light = $('#ro-bright'), channel = $('#ro-channel');
+  const st = m.state || '—';
+  const good = st === 'good';
+  const onLens = engine.lastFingerOk || (st !== 'not on lens' && st !== '—');
+  finger.textContent = onLens ? (good ? 'on lens ✓' : 'on lens') : 'not on lens';
+  finger.className = onLens ? (good ? 'ok' : '') : 'bad';
+  // the actionable line: what to fix (too dark / too bright / good)
+  light.textContent = st === '—' ? '—' : st === 'good' ? 'good ✓' : st;
+  light.className = good ? 'ok' : (st === '—' ? '' : 'bad');
   channel.textContent = m.channel || '—';
 }
 window.__tacho.updateReadout = updateReadout; // exposed for testing
@@ -88,7 +87,7 @@ let rearCams = [];
 let camIndex = 0;
 let torchOn = true;
 
-const CAM_HINT = 'Lay one finger flat across the whole camera bar so it covers both the lens cluster and the flash at once — a fingertip alone can\'t reach both. Watch the preview: it should glow solid dark red, and the wave should show a steady heartbeat. Adjust until it does.';
+const CAM_HINT = 'Find the glowing flash on the camera bar and cover it AND the lens next to it with one flat finger. Read the "light" line: "too dark" = the flash isn\'t landing on your finger, slide toward the glow; "not on lens" = cover more of the bar. If it never responds, tap Switch lens — the browser may be using a lens far from the flash. Goal: preview glows solid red, light says good.';
 
 function stopCamera() {
   engine.stop();
