@@ -14,6 +14,43 @@ window.__tacho = { engine, gauge }; // debug handle — also handy on-device
 
 engine.addEventListener('bpm', (e) => gauge.setBpm(e.detail.bpm));
 engine.addEventListener('beat', () => gauge.flashBeat());
+
+// live waveform: the last ~4s of the detrended pulse signal, so finger
+// placement problems are visible instead of guessed at
+const waveEl = $('#wave');
+const waveCtx = waveEl.getContext('2d');
+const waveBuf = [];
+let lastWaveDraw = 0;
+
+function drawWave() {
+  const W = waveEl.width, H = waveEl.height;
+  waveCtx.clearRect(0, 0, W, H);
+  if (waveBuf.length < 10) return;
+  let min = Infinity, max = -Infinity;
+  for (const d of waveBuf) { if (d < min) min = d; if (d > max) max = d; }
+  const span = Math.max(max - min, 1e-3);
+  waveCtx.beginPath();
+  waveBuf.forEach((d, i) => {
+    const x = (i / (waveBuf.length - 1)) * W;
+    const y = H - 6 - ((d - min) / span) * (H - 12);
+    i === 0 ? waveCtx.moveTo(x, y) : waveCtx.lineTo(x, y);
+  });
+  waveCtx.strokeStyle = '#ff4d4d';
+  waveCtx.lineWidth = 2;
+  waveCtx.stroke();
+}
+
+// draw from sample events, not requestAnimationFrame — rAF stops entirely in
+// hidden tabs, and event-driven drawing costs nothing extra at ~10fps
+engine.addEventListener('sample', (e) => {
+  waveBuf.push(e.detail.d);
+  if (waveBuf.length > 120) waveBuf.shift(); // ~4s at 30Hz
+  const now = performance.now();
+  if (now - lastWaveDraw > 100 && !waveEl.classList.contains('hidden')) {
+    lastWaveDraw = now;
+    drawWave();
+  }
+});
 engine.addEventListener('signal', (e) => {
   const { quality, label } = e.detail;
   const fill = $('#sig-fill');
@@ -32,14 +69,17 @@ $('#btn-camera').addEventListener('click', async () => {
     $('#sig-status').textContent = 'camera off';
     $('#sig-fill').style.width = '0%';
     $('#task-launch').classList.add('hidden');
+    $('#wave').classList.add('hidden');
     return;
   }
   btn.disabled = true;
   btn.textContent = 'Starting…';
+  waveBuf.length = 0;
+  $('#wave').classList.remove('hidden');
   try {
     if (SIM) throw new Error('sim mode requested');
     await engine.start(new CameraSource());
-    $('#measure-hint').textContent = 'Cover the rear camera lens completely with your fingertip. Press lightly — enough to see red, not white.';
+    $('#measure-hint').textContent = 'Cover the rear camera lens completely with your fingertip. Press lightly, and adjust until the wave shows a steady heartbeat rhythm. The flash is on by design — it lights your fingertip so the camera can read your pulse.';
     btn.textContent = 'Stop camera';
   } catch (err) {
     // no camera (desktop) or permission denied → simulated pulse so the app is still usable

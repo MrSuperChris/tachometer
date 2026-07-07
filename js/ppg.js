@@ -14,7 +14,8 @@ export class PPGEngine extends EventTarget {
     this._detrended = [];     // parallel to samples
     this.WINDOW_MS = 8000;
     this.BASELINE_MS = 900;   // moving-average detrend window
-    this.REFRACTORY_MS = 350; // max ~170 bpm
+    this.REFRACTORY_MS = 400; // max 150 bpm; also rejects dicrotic-notch double counts
+    this.lastMeta = {};
   }
 
   async start(source) {
@@ -27,7 +28,7 @@ export class PPGEngine extends EventTarget {
     this.quality = 0;
     this._peakAmpEma = 0;
     this._lastBeatT = 0;
-    await source.start((t, v, fingerOk) => this._onSample(t, v, fingerOk));
+    await source.start((t, v, fingerOk, meta) => this._onSample(t, v, fingerOk, meta));
   }
 
   stop() {
@@ -36,7 +37,8 @@ export class PPGEngine extends EventTarget {
 
   get running() { return !!this.source; }
 
-  _onSample(t, v, fingerOk) {
+  _onSample(t, v, fingerOk, meta = {}) {
+    this.lastMeta = meta;
     const S = this.samples;
     S.push({ t, v });
     // trim window
@@ -51,7 +53,7 @@ export class PPGEngine extends EventTarget {
     this.dispatchEvent(new CustomEvent('sample', { detail: { t, v, d } }));
 
     if (!fingerOk) {
-      this._setQuality(0, 'no finger');
+      this._setQuality(0, meta.blown ? 'too bright — ease off' : 'no finger');
       return;
     }
 
@@ -122,8 +124,8 @@ export class PPGEngine extends EventTarget {
     let varsum = 0;
     for (const x of ibis) varsum += (x - mean) * (x - mean);
     const cv = Math.sqrt(varsum / ibis.length) / mean; // coefficient of variation
-    // cv < 0.08 excellent, > 0.35 junk
-    const q = Math.max(0, Math.min(1, 1 - (cv - 0.08) / 0.27));
+    // cv < 0.12 excellent (resting HRV + 30fps sampling jitter is easily 10%), > 0.45 junk
+    const q = Math.max(0, Math.min(1, 1 - (cv - 0.12) / 0.33));
     this._setQuality(q, q > 0.6 ? 'locked' : 'unsteady');
   }
 
@@ -156,8 +158,24 @@ export class CameraSource {
       audio: false,
     });
     const track = this.stream.getVideoTracks()[0];
-    // torch: best effort — many Android phones support it, desktop won't
-    try { await track.applyConstraints({ advanced: [{ torch: true }] }); } catch (_) {}
+
+    // Best-effort camera tuning, applied one by one so a failure doesn't kill the rest:
+    // torch lights the fingertip; locked focus stops autofocus hunting against the
+    // pressed finger; minimum exposure compensation fights sensor saturation.
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const tries = [];
+    if (caps.torch) tries.push({ torch: true });
+    if (caps.focusMode?.includes('manual') && caps.focusDistance) {
+      tries.push({ focusMode: 'manual', focusDistance: caps.focusDistance.min });
+    } else if (caps.focusMode?.includes('fixed')) {
+      tries.push({ focusMode: 'fixed' });
+    }
+    if (caps.exposureCompensation) {
+      tries.push({ exposureCompensation: caps.exposureCompensation.min });
+    }
+    for (const c of tries) {
+      try { await track.applyConstraints({ advanced: [c] }); } catch (_) {}
+    }
 
     this.video = document.createElement('video');
     this.video.setAttribute('playsinline', '');
@@ -165,6 +183,7 @@ export class CameraSource {
     this.video.srcObject = this.stream;
     await this.video.play();
 
+    this.useGreen = false;
     this.timer = setInterval(() => {
       const { ctx, canvas, video } = this;
       if (video.readyState < 2) return;
@@ -174,9 +193,19 @@ export class CameraSource {
       const n = px.length / 4;
       for (let i = 0; i < px.length; i += 4) { r += px[i]; g += px[i + 1]; b += px[i + 2]; }
       r /= n; g /= n; b /= n;
-      // finger over lens (with torch or ambient light through skin): strongly red-dominant
-      const fingerOk = r > 80 && r > 1.8 * g && r > 1.8 * b;
-      onSample(performance.now(), r, fingerOk);
+
+      // Torch usually clips the red channel at 255, flattening the pulse wave.
+      // Green rarely clips and carries a cleaner PPG signal — switch with hysteresis.
+      if (r >= 245) this.useGreen = true;
+      else if (r <= 235) this.useGreen = false;
+      const blown = r >= 245 && g >= 230; // even green is clipped — too much light
+      const v = this.useGreen ? g : r;
+
+      // finger over lens: red-dominant image (works dim or bright), or red fully
+      // saturated with usable green underneath
+      const fingerOk = !blown &&
+        ((r > 35 && r > 1.35 * g && r > 1.35 * b) || (r >= 245 && g > 8));
+      onSample(performance.now(), v, fingerOk, { blown, r: Math.round(r), g: Math.round(g) });
     }, 33);
   }
 
