@@ -30,9 +30,24 @@
 
     <canvas id="wave" width="480" height="64" class="hidden"></canvas>
 
+    <div id="cam-diag" class="hidden">
+      <div id="cam-preview-wrap">
+        <div id="cam-preview"></div>
+        <div id="cam-readout">
+          <div class="ro-row"><span>finger</span><b id="ro-finger">—</b></div>
+          <div class="ro-row"><span>brightness</span><b id="ro-bright">—</b></div>
+          <div class="ro-row"><span>channel</span><b id="ro-channel">—</b></div>
+        </div>
+      </div>
+      <div class="cam-btn-row">
+        <button id="btn-torch" class="btn ghost small">Flash: on</button>
+        <button id="btn-switch" class="btn ghost small">Switch lens</button>
+      </div>
+    </div>
+
     <div id="measure-controls">
       <button id="btn-camera" class="btn primary">Start camera</button>
-      <p id="measure-hint" class="hint">Cover the rear camera lens completely with your fingertip. Press lightly, and adjust until the wave below shows a steady heartbeat rhythm. The flash stays on by design — it lights your fingertip so the camera can read your pulse.</p>
+      <p id="measure-hint" class="hint">Rest one finger flat across the whole camera bar — covering both the lenses and the flash together. On phones with a wide camera bar, a single fingertip can't reach both. Press gently; the flash stays on by design, lighting your finger so the camera reads your pulse.</p>
     </div>
 
     <div id="task-launch" class="hidden">

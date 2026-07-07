@@ -39,6 +39,7 @@ export class PPGEngine extends EventTarget {
 
   _onSample(t, v, fingerOk, meta = {}) {
     this.lastMeta = meta;
+    this.lastFingerOk = fingerOk;
     const S = this.samples;
     S.push({ t, v });
     // trim window
@@ -142,9 +143,13 @@ export class PPGEngine extends EventTarget {
 
 // ---------------- Camera source ----------------
 export class CameraSource {
-  constructor() {
+  constructor(opts = {}) {
+    this.deviceId = opts.deviceId || null; // pick a specific lens; else facingMode
+    this.torchOn = opts.torch !== false;   // default on, but user can disable
     this.stream = null;
-    this.video = null;
+    this.track = null;
+    this.video = null;      // live element — attach to DOM for the preview
+    this.hasTorch = false;
     this.timer = null;
     this.canvas = document.createElement('canvas');
     this.canvas.width = 64;
@@ -152,19 +157,34 @@ export class CameraSource {
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
   }
 
+  // Enumerate rear cameras so the user can switch if the browser grabbed the
+  // wrong lens (labels are only populated after a getUserMedia grant).
+  static async listRearCameras() {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const cams = devs.filter(d => d.kind === 'videoinput');
+    const rear = cams.filter(d => /back|rear|environment/i.test(d.label));
+    return (rear.length ? rear : cams).map((d, i) => ({
+      deviceId: d.deviceId,
+      label: d.label || `Camera ${i + 1}`,
+    }));
+  }
+
   async start(onSample) {
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
-      audio: false,
-    });
+    const video = this.deviceId
+      ? { deviceId: { exact: this.deviceId }, width: { ideal: 320 }, height: { ideal: 240 } }
+      : { facingMode: { ideal: 'environment' }, width: { ideal: 320 }, height: { ideal: 240 } };
+    this.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
     const track = this.stream.getVideoTracks()[0];
+    this.track = track;
 
     // Best-effort camera tuning, applied one by one so a failure doesn't kill the rest:
     // torch lights the fingertip; locked focus stops autofocus hunting against the
     // pressed finger; minimum exposure compensation fights sensor saturation.
     const caps = track.getCapabilities ? track.getCapabilities() : {};
+    this.hasTorch = !!caps.torch;
     const tries = [];
-    if (caps.torch) tries.push({ torch: true });
+    if (caps.torch && this.torchOn) tries.push({ torch: true });
     if (caps.focusMode?.includes('manual') && caps.focusDistance) {
       tries.push({ focusMode: 'manual', focusDistance: caps.focusDistance.min });
     } else if (caps.focusMode?.includes('fixed')) {
@@ -205,14 +225,25 @@ export class CameraSource {
       // saturated with usable green underneath
       const fingerOk = !blown &&
         ((r > 35 && r > 1.35 * g && r > 1.35 * b) || (r >= 245 && g > 8));
-      onSample(performance.now(), v, fingerOk, { blown, r: Math.round(r), g: Math.round(g) });
+      onSample(performance.now(), v, fingerOk, {
+        blown, r: Math.round(r), g: Math.round(g), b: Math.round(b),
+        channel: this.useGreen ? 'green' : 'red',
+      });
     }, 33);
+  }
+
+  async setTorch(on) {
+    this.torchOn = on;
+    if (this.track && this.hasTorch) {
+      try { await this.track.applyConstraints({ advanced: [{ torch: on }] }); } catch (_) {}
+    }
   }
 
   stop() {
     clearInterval(this.timer);
     if (this.stream) this.stream.getTracks().forEach(t => t.stop());
     this.stream = null;
+    this.track = null;
   }
 }
 

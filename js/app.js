@@ -42,6 +42,7 @@ function drawWave() {
 
 // draw from sample events, not requestAnimationFrame — rAF stops entirely in
 // hidden tabs, and event-driven drawing costs nothing extra at ~10fps
+let lastReadout = 0;
 engine.addEventListener('sample', (e) => {
   waveBuf.push(e.detail.d);
   if (waveBuf.length > 120) waveBuf.shift(); // ~4s at 30Hz
@@ -50,7 +51,28 @@ engine.addEventListener('sample', (e) => {
     lastWaveDraw = now;
     drawWave();
   }
+  if (now - lastReadout > 200 && !$('#cam-diag').classList.contains('hidden')) {
+    lastReadout = now;
+    updateReadout();
+  }
 });
+
+// live diagnostic readout — turns "am I doing it wrong?" into something visible
+function updateReadout() {
+  const m = engine.lastMeta || {};
+  const finger = $('#ro-finger'), bright = $('#ro-bright'), channel = $('#ro-channel');
+  const ok = engine.lastFingerOk;
+  finger.textContent = ok ? 'detected' : (m.blown ? 'too bright' : 'not on lens');
+  finger.className = ok ? 'ok' : 'bad';
+  // brightness of the channel we're reading, 0–255
+  const level = m.channel === 'green' ? m.g : m.r;
+  const state = level == null ? '—'
+    : m.blown ? 'saturated' : level < 30 ? 'too dark' : level > 240 ? 'very bright' : 'good';
+  bright.textContent = level == null ? '—' : `${level} (${state})`;
+  bright.className = (state === 'good') ? 'ok' : (state === '—' ? '' : 'bad');
+  channel.textContent = m.channel || '—';
+}
+window.__tacho.updateReadout = updateReadout; // exposed for testing
 engine.addEventListener('signal', (e) => {
   const { quality, label } = e.detail;
   const fill = $('#sig-fill');
@@ -60,36 +82,83 @@ engine.addEventListener('signal', (e) => {
   $('#task-launch').classList.toggle('hidden', !(quality > 0.5));
 });
 
-$('#btn-camera').addEventListener('click', async () => {
+// camera state, so torch/switch controls can act on the live source
+let camSource = null;
+let rearCams = [];
+let camIndex = 0;
+let torchOn = true;
+
+const CAM_HINT = 'Lay one finger flat across the whole camera bar so it covers both the lens cluster and the flash at once — a fingertip alone can\'t reach both. Watch the preview: it should glow solid dark red, and the wave should show a steady heartbeat. Adjust until it does.';
+
+function stopCamera() {
+  engine.stop();
+  camSource = null;
+  gauge.setBpm(0);
+  $('#btn-camera').textContent = 'Start camera';
+  $('#sig-status').textContent = 'camera off';
+  $('#sig-fill').style.width = '0%';
+  $('#task-launch').classList.add('hidden');
+  $('#wave').classList.add('hidden');
+  $('#cam-diag').classList.add('hidden');
+  $('#cam-preview').innerHTML = '';
+}
+
+async function startCamera(deviceId) {
   const btn = $('#btn-camera');
-  if (engine.running) {
-    engine.stop();
-    gauge.setBpm(0);
-    btn.textContent = 'Start camera';
-    $('#sig-status').textContent = 'camera off';
-    $('#sig-fill').style.width = '0%';
-    $('#task-launch').classList.add('hidden');
-    $('#wave').classList.add('hidden');
-    return;
-  }
   btn.disabled = true;
   btn.textContent = 'Starting…';
   waveBuf.length = 0;
   $('#wave').classList.remove('hidden');
   try {
     if (SIM) throw new Error('sim mode requested');
-    await engine.start(new CameraSource());
-    $('#measure-hint').textContent = 'Cover the rear camera lens completely with your fingertip. Press lightly, and adjust until the wave shows a steady heartbeat rhythm. The flash is on by design — it lights your fingertip so the camera can read your pulse.';
+    camSource = new CameraSource({ deviceId, torch: torchOn });
+    await engine.start(camSource);
+    // show the live preview so the user can aim their finger
+    $('#cam-preview').innerHTML = '';
+    $('#cam-preview').appendChild(camSource.video);
+    $('#cam-diag').classList.remove('hidden');
+    $('#btn-torch').classList.toggle('hidden', !camSource.hasTorch);
+    $('#btn-torch').textContent = `Flash: ${camSource.torchOn ? 'on' : 'off'}`;
+    // populate the lens list once we have a grant (labels need permission)
+    if (!rearCams.length) {
+      rearCams = await CameraSource.listRearCameras();
+      const i = rearCams.findIndex(c => c.deviceId === camSource.track?.getSettings?.().deviceId);
+      if (i >= 0) camIndex = i;
+    }
+    $('#btn-switch').classList.toggle('hidden', rearCams.length < 2);
+    $('#measure-hint').textContent = CAM_HINT;
     btn.textContent = 'Stop camera';
   } catch (err) {
     // no camera (desktop) or permission denied → simulated pulse so the app is still usable
+    camSource = null;
     await engine.start(new SimSource());
+    $('#cam-diag').classList.add('hidden');
     $('#measure-hint').textContent = SIM
       ? 'SIMULATED PULSE — synthetic ~62 bpm signal for testing.'
       : 'Camera unavailable — running a SIMULATED pulse so you can explore. On your phone, allow camera access for real measurement.';
     btn.textContent = 'Stop';
   }
   btn.disabled = false;
+}
+
+$('#btn-camera').addEventListener('click', () => {
+  if (engine.running) stopCamera();
+  else startCamera(rearCams[camIndex]?.deviceId);
+});
+
+$('#btn-torch').addEventListener('click', async () => {
+  if (!camSource) return;
+  torchOn = !camSource.torchOn;
+  await camSource.setTorch(torchOn);
+  $('#btn-torch').textContent = `Flash: ${torchOn ? 'on' : 'off'}`;
+});
+
+$('#btn-switch').addEventListener('click', async () => {
+  if (!rearCams.length) return;
+  camIndex = (camIndex + 1) % rearCams.length;
+  engine.stop();
+  await startCamera(rearCams[camIndex].deviceId);
+  $('#sig-status').textContent = `lens ${camIndex + 1}/${rearCams.length}`;
 });
 
 // ---------------- view switching ----------------
