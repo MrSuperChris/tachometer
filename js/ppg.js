@@ -178,28 +178,23 @@ export class CameraSource {
     const track = this.stream.getVideoTracks()[0];
     this.track = track;
 
-    // Best-effort camera tuning, applied one by one so a failure doesn't kill the rest:
-    // torch lights the fingertip; locked focus stops autofocus hunting against the
-    // pressed finger; minimum exposure compensation fights sensor saturation.
+    // Best-effort camera tuning, applied one by one so a failure doesn't kill the rest.
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     this.hasTorch = !!caps.torch;
     const tries = [];
     if (caps.torch && this.torchOn) tries.push({ torch: true });
+    // Lock focus so autofocus doesn't hunt against the pressed finger.
     if (caps.focusMode?.includes('manual') && caps.focusDistance) {
       tries.push({ focusMode: 'manual', focusDistance: caps.focusDistance.min });
     } else if (caps.focusMode?.includes('fixed')) {
       tries.push({ focusMode: 'fixed' });
     }
-    // Lock exposure low so a dark, covered lens doesn't get gain-cranked into
-    // noisy gray (which reads like an empty room). Manual mode where available,
-    // else pin exposure compensation to minimum.
-    if (caps.exposureMode?.includes('manual')) tries.push({ exposureMode: 'manual' });
-    if (caps.exposureTime) tries.push({ exposureTime: caps.exposureTime.min });
-    if (caps.iso) tries.push({ iso: caps.iso.min });
-    if (caps.exposureCompensation) {
-      tries.push({ exposureCompensation: caps.exposureCompensation.min });
-    }
-    if (caps.whiteBalanceMode?.includes('manual')) tries.push({ whiteBalanceMode: 'manual' });
+    // Exposure stays on AUTO deliberately. When a finger covers the lens and the
+    // flash barely reaches it (wide camera bars), auto-gain brightens the dark
+    // tissue and surfaces the faint pulse. An earlier build pinned exposure to
+    // minimum to stop dark scenes gain-cranking into fake "gray room" readings —
+    // uniformity detection now handles that, so forcing minimum exposure only hurt
+    // the common too-dark case.
     for (const c of tries) {
       try { await track.applyConstraints({ advanced: [c] }); } catch (_) {}
     }
